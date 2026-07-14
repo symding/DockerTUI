@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	containertypes "github.com/docker/docker/api/types/container"
 	mounttypes "github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/swarm"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 func TestNavComponentShowsBothOptions(t *testing.T) {
@@ -220,8 +222,8 @@ func TestContainerActionShortcutUsesNextLetterForConflict(t *testing.T) {
 	if next.actionOpen {
 		t.Fatalf("container action popover is still open")
 	}
-	if next.status != "Running docker start" {
-		t.Fatalf("status = %q, want Running docker start", next.status)
+	if next.status != "Running container start" {
+		t.Fatalf("status = %q, want Running container start", next.status)
 	}
 	if cmd == nil {
 		t.Fatalf("container start command is nil")
@@ -240,8 +242,8 @@ func TestContainerActionReturnsUpdateCommand(t *testing.T) {
 	if next.actionOpen {
 		t.Fatalf("container action popover is still open")
 	}
-	if next.status != "Running docker restart" {
-		t.Fatalf("status = %q, want Running docker restart", next.status)
+	if next.status != "Running container restart" {
+		t.Fatalf("status = %q, want Running container restart", next.status)
 	}
 	if cmd == nil {
 		t.Fatalf("container update command is nil")
@@ -278,6 +280,39 @@ func TestContainerLogModalRendersOverContainerList(t *testing.T) {
 	if !strings.Contains(modal, "┌─Container Logs: web") {
 		t.Fatalf("container log modal title is not rendered in top border:\n%s", modal)
 	}
+}
+
+func TestScanLogReaderReadsRawStream(t *testing.T) {
+	lines := make(chan string, 2)
+
+	scanLogReader(strings.NewReader("first\nsecond\n"), lines, false)
+	close(lines)
+
+	if got := strings.Join(readLogLines(lines), "\n"); got != "first\nsecond" {
+		t.Fatalf("lines = %q, want raw log lines", got)
+	}
+}
+
+func TestScanLogReaderReadsMultiplexedStream(t *testing.T) {
+	var buf bytes.Buffer
+	_, _ = stdcopy.NewStdWriter(&buf, stdcopy.Stdout).Write([]byte("stdout\n"))
+	_, _ = stdcopy.NewStdWriter(&buf, stdcopy.Stderr).Write([]byte("stderr\n"))
+	lines := make(chan string, 2)
+
+	scanLogReader(&buf, lines, true)
+	close(lines)
+
+	if got := strings.Join(readLogLines(lines), "\n"); got != "stdout\nstderr" {
+		t.Fatalf("lines = %q, want multiplexed log lines", got)
+	}
+}
+
+func readLogLines(lines <-chan string) []string {
+	var values []string
+	for line := range lines {
+		values = append(values, line)
+	}
+	return values
 }
 
 func TestClosingContainerLogModalRestoresListSelection(t *testing.T) {

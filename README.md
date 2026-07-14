@@ -17,7 +17,6 @@ Docker TUI is a terminal interface for browsing and operating Docker containers 
 ## Requirements
 
 - Go 1.25 or newer.
-- Docker CLI available on `PATH`.
 - A reachable Docker daemon.
 - Docker permissions for the current user.
 

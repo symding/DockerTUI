@@ -5,13 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	containertypes "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/versions"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 type logSession struct {
@@ -41,61 +42,95 @@ func dockerAPIClient() (*dockerclient.Client, error) {
 	return dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 }
 
-func dockerOutput(args ...string) (string, error) {
-	cmd := exec.Command("docker", args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "", fmt.Errorf("docker %s: %s", strings.Join(args, " "), msg)
-	}
-	return string(out), nil
-}
-
-func startLog(id int, args []string) *logSession {
+func startContainerLog(id int, containerID string) *logSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	lines := make(chan string, 200)
-	go streamDockerLogs(ctx, lines, args...)
+	go streamContainerLogs(ctx, lines, containerID)
 	return &logSession{id: id, lines: lines, cancel: cancel}
 }
 
-func streamDockerLogs(ctx context.Context, lines chan<- string, args ...string) {
-	defer close(lines)
-
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		lines <- err.Error()
-		return
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		lines <- err.Error()
-		return
-	}
-	if err := cmd.Start(); err != nil {
-		lines <- err.Error()
-		return
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go scanLines(stdout, lines, &wg)
-	go scanLines(stderr, lines, &wg)
-	wg.Wait()
-
-	if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-		lines <- err.Error()
-	}
+func startServiceLog(id int, taskID string, tty bool) *logSession {
+	ctx, cancel := context.WithCancel(context.Background())
+	lines := make(chan string, 200)
+	go streamServiceLogs(ctx, lines, taskID, tty)
+	return &logSession{id: id, lines: lines, cancel: cancel}
 }
 
-func scanLines(r io.Reader, lines chan<- string, wg *sync.WaitGroup) {
-	defer wg.Done()
+func streamContainerLogs(ctx context.Context, lines chan<- string, containerID string) {
+	defer close(lines)
+
+	cli, err := dockerAPIClient()
+	if err != nil {
+		lines <- err.Error()
+		return
+	}
+	defer cli.Close()
+
+	cli.NegotiateAPIVersion(ctx)
+	inspect, err := cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		lines <- err.Error()
+		return
+	}
+
+	reader, err := cli.ContainerLogs(ctx, containerID, containertypes.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Tail:       "100",
+	})
+	if err != nil {
+		lines <- err.Error()
+		return
+	}
+	defer reader.Close()
+
+	tty := inspect.Config != nil && inspect.Config.Tty
+	scanLogReader(reader, lines, !tty && versions.GreaterThanOrEqualTo(cli.ClientVersion(), "1.42"))
+}
+
+func streamServiceLogs(ctx context.Context, lines chan<- string, taskID string, tty bool) {
+	defer close(lines)
+
+	cli, err := dockerAPIClient()
+	if err != nil {
+		lines <- err.Error()
+		return
+	}
+	defer cli.Close()
+
+	cli.NegotiateAPIVersion(ctx)
+	reader, err := cli.TaskLogs(ctx, taskID, containertypes.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Tail:       "100",
+	})
+	if err != nil {
+		lines <- err.Error()
+		return
+	}
+	defer reader.Close()
+
+	scanLogReader(reader, lines, !tty && versions.GreaterThanOrEqualTo(cli.ClientVersion(), "1.42"))
+}
+
+func scanLogReader(r io.Reader, lines chan<- string, multiplexed bool) {
+	if multiplexed {
+		src := r
+		pr, pw := io.Pipe()
+		go func() {
+			_, err := stdcopy.StdCopy(pw, pw, src)
+			_ = pw.CloseWithError(err)
+		}()
+		r = pr
+	}
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		lines <- scanner.Text()
+	}
+	if err := scanner.Err(); err != nil {
+		lines <- err.Error()
 	}
 }
 

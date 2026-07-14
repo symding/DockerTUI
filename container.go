@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -122,7 +123,7 @@ func (m model) openContainerAction() (tea.Model, tea.Cmd) {
 
 func (m model) runContainerAction(action string) (tea.Model, tea.Cmd) {
 	m.actionOpen = false
-	m.status = fmt.Sprintf("Running docker %s", action)
+	m.status = fmt.Sprintf("Running container %s", action)
 	return m, updateContainer(action, m.activeContainer.ID)
 }
 
@@ -136,7 +137,7 @@ func (m model) openContainerLogs() (tea.Model, tea.Cmd) {
 	m.logStatus = fmt.Sprintf("%d containers", len(m.containers))
 	m.resizeComponents()
 	m.updateLogView()
-	s := startLog(m.logID, []string{"logs", "--tail", "100", "-f", m.activeContainer.ID})
+	s := startContainerLog(m.logID, m.activeContainer.ID)
 	m.logSession = s
 	m.status = "Following container logs"
 	return m, waitLogLine(s.id, s.lines)
@@ -150,24 +151,26 @@ func (m model) openContainerInspect() (tea.Model, tea.Cmd) {
 
 func loadContainers() tea.Cmd {
 	return func() tea.Msg {
-		out, err := dockerOutput("ps", "-a", "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Command}}\t{{.RunningFor}}\t{{.Status}}\t{{.Ports}}")
+		cli, err := dockerAPIClient()
 		if err != nil {
 			return containersLoadedMsg{err: err}
 		}
-		var items []containerItem
-		for _, line := range splitLines(out) {
-			cols := strings.Split(line, "\t")
-			if len(cols) < 7 {
-				continue
-			}
+		defer cli.Close()
+
+		containers, err := cli.ContainerList(context.Background(), containertypes.ListOptions{All: true})
+		if err != nil {
+			return containersLoadedMsg{err: err}
+		}
+		items := make([]containerItem, 0, len(containers))
+		for _, c := range containers {
 			items = append(items, containerItem{
-				ID:      cols[0],
-				Name:    cols[1],
-				Image:   cols[2],
-				Command: cols[3],
-				Created: cols[4],
-				Status:  cols[5],
-				Ports:   cols[6],
+				ID:      shortID(c.ID),
+				Name:    formatContainerNames(c.Names),
+				Image:   c.Image,
+				Command: c.Command,
+				Created: formatCreated(c.Created),
+				Status:  c.Status,
+				Ports:   formatContainerPorts(c.Ports),
 			})
 		}
 		return containersLoadedMsg{items: items}
@@ -213,9 +216,65 @@ func loadContainerStats(ctx context.Context, cli *dockerclient.Client, container
 
 func updateContainer(action, containerID string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := dockerOutput(action, containerID)
+		cli, err := dockerAPIClient()
+		if err != nil {
+			return containerUpdatedMsg{err: err}
+		}
+		defer cli.Close()
+
+		ctx := context.Background()
+		switch action {
+		case "start":
+			err = cli.ContainerStart(ctx, containerID, containertypes.StartOptions{})
+		case "stop":
+			err = cli.ContainerStop(ctx, containerID, containertypes.StopOptions{})
+		case "kill":
+			err = cli.ContainerKill(ctx, containerID, "")
+		default:
+			err = cli.ContainerRestart(ctx, containerID, containertypes.StopOptions{})
+		}
 		return containerUpdatedMsg{err: err}
 	}
+}
+
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func formatContainerNames(names []string) string {
+	trimmed := make([]string, 0, len(names))
+	for _, name := range names {
+		trimmed = append(trimmed, strings.TrimPrefix(name, "/"))
+	}
+	return strings.Join(trimmed, ", ")
+}
+
+func formatCreated(created int64) string {
+	if created == 0 {
+		return "-"
+	}
+	return formatDuration(time.Since(time.Unix(created, 0))) + " ago"
+}
+
+func formatContainerPorts(ports []containertypes.Port) string {
+	values := make([]string, 0, len(ports))
+	for _, port := range ports {
+		target := fmt.Sprintf("%d/%s", port.PrivatePort, port.Type)
+		if port.PublicPort == 0 {
+			values = append(values, target)
+			continue
+		}
+		host := fmt.Sprintf("%d", port.PublicPort)
+		if port.IP != "" {
+			host = port.IP + ":" + host
+		}
+		values = append(values, fmt.Sprintf("%s->%s", host, target))
+	}
+	sort.Strings(values)
+	return strings.Join(values, ", ")
 }
 
 func formatContainerInspect(info containertypes.InspectResponse, stats containertypes.StatsResponse, hasStats bool) string {
@@ -318,15 +377,21 @@ func formatBytes(value uint64) string {
 
 func loadStats(id int, containerID string) tea.Cmd {
 	return func() tea.Msg {
-		out, err := dockerOutput("stats", "--no-stream", "--format", "{{.CPUPerc}}\t{{.MemUsage}}", containerID)
+		cli, err := dockerAPIClient()
 		if err != nil {
 			return statsLoadedMsg{id: id, err: err}
 		}
-		cols := strings.Split(strings.TrimSpace(out), "\t")
-		if len(cols) < 2 {
+		defer cli.Close()
+
+		stats, ok := loadContainerStats(context.Background(), cli, containerID)
+		if !ok {
 			return statsLoadedMsg{id: id, cpu: "-", memory: "-"}
 		}
-		return statsLoadedMsg{id: id, cpu: cols[0], memory: cols[1]}
+		return statsLoadedMsg{
+			id:     id,
+			cpu:    fmt.Sprintf("%.2f%%", containerCPUPercent(stats)),
+			memory: fmt.Sprintf("%s / %s", formatBytes(stats.MemoryStats.Usage), formatBytes(stats.MemoryStats.Limit)),
+		}
 	}
 }
 

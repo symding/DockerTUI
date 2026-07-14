@@ -11,6 +11,7 @@ import (
 	btable "github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/docker/docker/api/types/filters"
 	mounttypes "github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/swarm"
 )
@@ -38,6 +39,7 @@ type taskItem struct {
 	Image        string
 	CurrentState string
 	Node         string
+	TTY          bool
 }
 
 type servicesLoadedMsg struct {
@@ -207,21 +209,23 @@ func (m model) submitServiceInput() (tea.Model, tea.Cmd) {
 
 func loadServices() tea.Cmd {
 	return func() tea.Msg {
-		out, err := dockerOutput("service", "ls", "--format", "{{.ID}}\t{{.Name}}\t{{.Image}}\t{{.Replicas}}")
+		cli, err := dockerAPIClient()
 		if err != nil {
 			return servicesLoadedMsg{err: err}
 		}
-		var items []serviceItem
-		for _, line := range splitLines(out) {
-			cols := strings.Split(line, "\t")
-			if len(cols) < 4 {
-				continue
-			}
+		defer cli.Close()
+
+		services, err := cli.ServiceList(context.Background(), swarm.ServiceListOptions{Status: true})
+		if err != nil {
+			return servicesLoadedMsg{err: err}
+		}
+		items := make([]serviceItem, 0, len(services))
+		for _, service := range services {
 			items = append(items, serviceItem{
-				ID:       cols[0],
-				Name:     cols[1],
-				Image:    cols[2],
-				Replicas: cols[3],
+				ID:       shortID(service.ID),
+				Name:     service.Spec.Name,
+				Image:    serviceImage(service),
+				Replicas: serviceReplicas(service),
 			})
 		}
 		return servicesLoadedMsg{items: items}
@@ -230,26 +234,71 @@ func loadServices() tea.Cmd {
 
 func loadTasks(serviceID string) tea.Cmd {
 	return func() tea.Msg {
-		out, err := dockerOutput("service", "ps", serviceID, "--format", "{{.ID}}\t{{.Name}}\t{{.Image}}\t{{.CurrentState}}\t{{.Node}}")
+		cli, err := dockerAPIClient()
 		if err != nil {
 			return tasksLoadedMsg{err: err}
 		}
-		var items []taskItem
-		for _, line := range splitLines(out) {
-			cols := strings.Split(line, "\t")
-			if len(cols) < 5 {
-				continue
-			}
+		defer cli.Close()
+
+		tasks, err := cli.TaskList(context.Background(), swarm.TaskListOptions{
+			Filters: filters.NewArgs(filters.Arg("service", serviceID)),
+		})
+		if err != nil {
+			return tasksLoadedMsg{err: err}
+		}
+		items := make([]taskItem, 0, len(tasks))
+		for _, task := range tasks {
 			items = append(items, taskItem{
-				ID:           cols[0],
-				Name:         cols[1],
-				Image:        cols[2],
-				CurrentState: cols[3],
-				Node:         cols[4],
+				ID:           shortID(task.ID),
+				Name:         taskName(task),
+				Image:        taskImage(task),
+				CurrentState: taskCurrentState(task),
+				Node:         task.NodeID,
+				TTY:          taskTTY(task),
 			})
 		}
 		return tasksLoadedMsg{items: items}
 	}
+}
+
+func serviceImage(service swarm.Service) string {
+	if service.Spec.TaskTemplate.ContainerSpec == nil {
+		return "-"
+	}
+	return service.Spec.TaskTemplate.ContainerSpec.Image
+}
+
+func taskName(task swarm.Task) string {
+	if task.Name != "" {
+		return task.Name
+	}
+	if task.Slot > 0 {
+		return fmt.Sprintf("%s.%d", task.ServiceID, task.Slot)
+	}
+	return task.ID
+}
+
+func taskImage(task swarm.Task) string {
+	if task.Spec.ContainerSpec == nil {
+		return "-"
+	}
+	return task.Spec.ContainerSpec.Image
+}
+
+func taskTTY(task swarm.Task) bool {
+	return task.Spec.ContainerSpec != nil && task.Spec.ContainerSpec.TTY
+}
+
+func taskCurrentState(task swarm.Task) string {
+	state := string(task.Status.State)
+	if state == "" {
+		return "-"
+	}
+	value := strings.ToUpper(state[:1]) + state[1:]
+	if !task.Status.Timestamp.IsZero() {
+		value += " " + formatDuration(time.Since(task.Status.Timestamp)) + " ago"
+	}
+	return value
 }
 
 func loadServiceInspect(serviceID string) tea.Cmd {

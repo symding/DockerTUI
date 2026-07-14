@@ -598,7 +598,7 @@ func (m model) openSelection() (tea.Model, tea.Cmd) {
 		m.logStatus = fmt.Sprintf("%d tasks for %s", len(m.tasks), m.activeService.Name)
 		m.resizeComponents()
 		m.updateLogView()
-		s := startLog(m.logID, []string{"service", "logs", "--tail", "100", "-f", m.activeTask.ID})
+		s := startServiceLog(m.logID, m.activeTask.ID, m.activeTask.TTY)
 		s.stripPrefix = true
 		m.logSession = s
 		m.status = "Following service task logs"
