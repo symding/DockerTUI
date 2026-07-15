@@ -36,6 +36,12 @@ Run it from the repository:
 ./dockertui
 ```
 
+Connect to a remote Docker daemon:
+
+```sh
+./dockertui --url 192.168.1.10:2375
+```
+
 You can also run without creating a binary:
 
 ```sh

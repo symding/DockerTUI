@@ -38,8 +38,21 @@ type logClosedMsg struct {
 	id int
 }
 
+var dockerHostURL string
+
 func dockerAPIClient() (*dockerclient.Client, error) {
-	return dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	opts := []dockerclient.Opt{dockerclient.WithAPIVersionNegotiation()}
+	if dockerHostURL != "" {
+		opts = append(opts, dockerclient.WithHost(dockerHost(dockerHostURL)))
+	}
+	return dockerclient.NewClientWithOpts(opts...)
+}
+
+func dockerHost(url string) string {
+	if !strings.Contains(url, "://") {
+		return "tcp://" + url
+	}
+	return url
 }
 
 func startContainerLog(id int, containerID string) *logSession {

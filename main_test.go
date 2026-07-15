@@ -307,6 +307,28 @@ func TestScanLogReaderReadsMultiplexedStream(t *testing.T) {
 	}
 }
 
+func TestDockerAPIClientUsesConfiguredHost(t *testing.T) {
+	previous := dockerHostURL
+	dockerHostURL = "example.test:2375"
+	defer func() { dockerHostURL = previous }()
+
+	cli, err := dockerAPIClient()
+	if err != nil {
+		t.Fatalf("dockerAPIClient() error = %v", err)
+	}
+	defer cli.Close()
+
+	if cli.DaemonHost() != "tcp://"+dockerHostURL {
+		t.Fatalf("daemon host = %q, want tcp://%s", cli.DaemonHost(), dockerHostURL)
+	}
+}
+
+func TestDockerHostPreservesExplicitScheme(t *testing.T) {
+	if got := dockerHost("unix:///var/run/docker.sock"); got != "unix:///var/run/docker.sock" {
+		t.Fatalf("dockerHost() = %q, want explicit scheme unchanged", got)
+	}
+}
+
 func readLogLines(lines <-chan string) []string {
 	var values []string
 	for line := range lines {

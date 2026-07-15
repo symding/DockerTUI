@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,9 @@ import (
 )
 
 func main() {
+	flag.StringVar(&dockerHostURL, "url", "", "Docker daemon address")
+	flag.Parse()
+
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
