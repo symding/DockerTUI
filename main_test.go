@@ -49,6 +49,23 @@ func TestAppTitleRendered(t *testing.T) {
 	}
 }
 
+func TestAppTitleShowsCurrentServer(t *testing.T) {
+	previous := dockerHostURL
+	dockerHostURL = "192.168.1.10:2375"
+	defer func() { dockerHostURL = previous }()
+
+	m := initialModel()
+	m.width = 100
+	m.height = 8
+	m.resizeComponents()
+
+	view := m.View()
+
+	if !strings.Contains(view, "Server: 192.168.1.10:2375") {
+		t.Fatalf("view does not contain current server:\n%s", view)
+	}
+}
+
 func TestOperationHintRendered(t *testing.T) {
 	m := initialModel()
 	m.width = 100
@@ -57,10 +74,10 @@ func TestOperationHintRendered(t *testing.T) {
 
 	view := m.View()
 
-	if !strings.Contains(view, "Tab 切换导航") {
+	if !strings.Contains(view, "[Tab] switch") {
 		t.Fatalf("view does not contain Tab hint:\n%s", view)
 	}
-	if !strings.Contains(view, "↑/↓ 切换列表选项") {
+	if !strings.Contains(view, "[/] filter") {
 		t.Fatalf("view does not contain option navigation hint:\n%s", view)
 	}
 }

@@ -918,7 +918,7 @@ func (m model) View() string {
 	rightTitle, rightTitleColor := m.mainComponentTitle()
 	main := component.TitledPanelActive(rightTitle, rightTitleColor, mainBorderColor, m.rightWidth(), m.mainPanelHeight(), m.mainComponentView(), m.focus == focusMain)
 
-	base := component.AppFrame(m.width, nav, main)
+	base := component.AppFrame(m.width, dockerServerLabel(), nav, main)
 	if m.taskLogOpen {
 		return component.Overlay(base, m.taskLogModalView(), m.width, h)
 	}

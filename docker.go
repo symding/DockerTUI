@@ -55,6 +55,13 @@ func dockerHost(url string) string {
 	return url
 }
 
+func dockerServerLabel() string {
+	if dockerHostURL == "" {
+		return "local"
+	}
+	return dockerHostURL
+}
+
 func startContainerLog(id int, containerID string) *logSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	lines := make(chan string, 200)
